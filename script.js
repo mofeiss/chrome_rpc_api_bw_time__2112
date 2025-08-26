@@ -15,8 +15,8 @@ window.C = this;
   const reconnectDelay = 3000; // 重连延迟
 
   // 您的任务函数
-  function job(wxOpenid, prizeWord) {
-    C.sendBody = `{"wxOpenid":"${wxOpenid}","prizeWord":"${prizeWord}","batchNo":"20250826"}`;
+  function job(wxOpenid, prizeWord,batchNo) {
+    C.sendBody = `{"wxOpenid":"${wxOpenid}","prizeWord":"${prizeWord}","batchNo":"${batchNo}"}`;
     C.apiAttr.timestamp = new Date().getTime();
     A(B, C);
     return C.openArgs[1];
@@ -85,37 +85,52 @@ window.C = this;
           const data = JSON.parse(event.data);
           console.log('收到服务器任务：', data);
 
-          if (data.requestId && data.wxOpenid && data.prizeWord) {
-            // 执行任务
-            console.log('开始执行任务，参数：', { wxOpenid: data.wxOpenid, prizeWord: data.prizeWord });
+          // 适配新的 payload 结构
+          if (data.requestId && data.payload) {
+            const { wxOpenid, prizeWord, batchNo } = data.payload;
+            
+            if (wxOpenid && prizeWord) {
+              // 执行任务
+              console.log('开始执行任务，参数：', { wxOpenid, prizeWord, batchNo });
 
-            try {
-              const result = job(data.wxOpenid, data.prizeWord);
-              console.log('任务执行完成，结果：', result);
+              try {
+                // 生成签名 URL
+                const signedUrl = job(wxOpenid, prizeWord,batchNo);
+                console.log('签名 URL 生成完成：', signedUrl);
 
-              // 发送结果回服务器
-              const response = {
-                requestId: data.requestId,
-                result: result,
-              };
+                // 直接将签名URL返回给服务器，不再发起二次请求
+                const response = {
+                  requestId: data.requestId,
+                  finalResult: {
+                    signedUrl: signedUrl,
+                    requestParams: {
+                      wxOpenid,
+                      prizeWord,
+                      batchNo
+                    }
+                  }
+                };
 
-              if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(response));
-                console.log('任务结果已发送回服务器');
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify(response));
+                  console.log('签名 URL 已发送回服务器');
+                }
+                
+              } catch (error) {
+                console.error('执行任务时出错：', error);
+
+                // 发送错误信息回服务器
+                const errorResponse = {
+                  requestId: data.requestId,
+                  error: `任务执行失败: ${error.message}`
+                };
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify(errorResponse));
+                }
               }
-            } catch (error) {
-              console.error('执行任务时出错：', error);
-
-              // 发送错误信息回服务器
-              const errorResponse = {
-                requestId: data.requestId,
-                result: null,
-                error: error.message,
-              };
-
-              if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(errorResponse));
-              }
+            } else {
+              console.error('缺少必需参数 wxOpenid 或 prizeWord');
             }
           }
         } catch (error) {

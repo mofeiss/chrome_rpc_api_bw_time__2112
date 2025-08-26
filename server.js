@@ -21,21 +21,28 @@ wss.on('connection', (ws) => {
     
     console.log(`客户端 ${clientId} 已连接，当前在线客户端数量：${clients.size}`);
     
-    ws.on('message', (message) => {
+    ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
             console.log(`收到客户端 ${clientId} 的消息：`, data);
             
-            // 如果是任务结果回复
+            // 如果是最终结果回复
             if (data.requestId && pendingRequests.has(data.requestId)) {
                 const { res } = pendingRequests.get(data.requestId);
-                res.json({
-                    success: true,
-                    result: data.result,
-                    clientId: clientId
-                });
                 pendingRequests.delete(data.requestId);
-                console.log(`任务 ${data.requestId} 已完成`);
+                
+                // 检查是否有错误
+                if (data.error) {
+                    console.error(`客户端执行失败：`, data.error);
+                    return res.status(502).json({ 
+                        error: '客户端执行失败',
+                        detail: data.error
+                    });
+                }
+                
+                // 返回浏览器端获取的最终结果
+                console.log(`任务 ${data.requestId} 已完成，最终结果：`, data.finalResult);
+                res.json(data.finalResult);
             }
         } catch (error) {
             console.error('解析消息失败：', error);
@@ -54,8 +61,8 @@ wss.on('connection', (ws) => {
 });
 
 // API 接口：sig
-app.post('/sig', (req, res) => {
-    const { wxOpenid, prizeWord } = req.body;
+app.post('/sig', async (req, res) => {
+    const { wxOpenid, prizeWord, batchNo } = req.body;
     
     if (!wxOpenid) {
         return res.status(400).json({ error: '缺少参数 wxOpenid' });
@@ -63,6 +70,10 @@ app.post('/sig', (req, res) => {
     
     if (!prizeWord) {
         return res.status(400).json({ error: '缺少参数 prizeWord' });
+    }
+    
+    if (!batchNo) {
+        return res.status(400).json({ error: '缺少参数 batchNo' });
     }
     
     // 获取在线客户端列表
@@ -78,8 +89,8 @@ app.post('/sig', (req, res) => {
     
     const requestId = uuidv4();
     
-    // 存储待处理的请求
-    pendingRequests.set(requestId, { res });
+    // 存储待处理的请求（同时存储完整参数）
+    pendingRequests.set(requestId, { res, payload: { wxOpenid, prizeWord, batchNo } });
     
     // 设置超时处理
     const timeout = setTimeout(() => {
@@ -89,29 +100,20 @@ app.post('/sig', (req, res) => {
         }
     }, 30000); // 30秒超时
     
-    // 发送任务到选中的客户端
+    // 发送任务到选中的客户端（将完整参数作为 payload 发送）
     const task = {
         requestId,
-        wxOpenid,
-        prizeWord
+        payload: {
+            wxOpenid,
+            prizeWord,
+            batchNo
+        }
     };
     
     selectedWs.send(JSON.stringify(task));
-    console.log(`任务 ${requestId} 已发送到客户端 ${selectedClientId}，参数：wxOpenid=${wxOpenid}, prizeWord=${prizeWord}`);
+    console.log(`任务 ${requestId} 已发送到客户端 ${selectedClientId}，参数：wxOpenid=${wxOpenid}, prizeWord=${prizeWord}, batchNo=${batchNo}`);
     
-    // 清理超时器
-    const originalRes = pendingRequests.get(requestId)?.res;
-    if (originalRes) {
-        pendingRequests.set(requestId, { 
-            res: {
-                ...originalRes,
-                json: (data) => {
-                    clearTimeout(timeout);
-                    originalRes.json(data);
-                }
-            }
-        });
-    }
+    // 不再需要这个复杂的超时器清理逻辑，因为现在是在消息处理中使用 async/await
 });
 
 // 获取状态的接口
